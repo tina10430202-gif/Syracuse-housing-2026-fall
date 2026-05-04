@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>Syracuse housing map</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.4.1/dist/MarkerCluster.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.4.1/dist/MarkerCluster.Default.css" />
+    
+    <style>
+        body { margin: 0; padding: 0; display: flex; height: 100vh; font-family: "Microsoft JhengHei", sans-serif; overflow: hidden; }
+
+        /* 將地圖的 +/- 按鈕移到右邊，避免被側邊欄擋住 */
+.leaflet-top.leaflet-left {
+    left: auto;
+    right: 10px;
+}
+
+
+/* 如果你有用到比例尺或其他控制項，也可以一併調整 */
+.leaflet-control-zoom {
+    margin-top: 20px !important;
+    margin-right: 10px !important;
+}
+        
+        /* 側邊欄基礎樣式 */
+        #sidebar { 
+            width: 320px; 
+            background: #fdfdfd; 
+            padding: 20px; 
+            box-shadow: 2px 0 10px rgba(0,0,0,0.1); 
+            z-index: 1001; 
+            transition: all 0.3s ease; /* 動畫效果 */
+            position: relative;
+            /* 讓溢出的按鈕可以被看見 */
+            overflow: visible; 
+        }
+
+        /* 這裡放側邊欄內的內容捲動 */
+        .sidebar-inner {
+            height: 100%;
+            overflow-y: auto;
+        }
+
+        /* --- 修正點：側邊欄縮小時的位移 --- */
+        #sidebar.collapsed {
+            margin-left: -320px;
+        }
+
+        /* 當側邊欄縮小時，地圖佔滿空間 */
+        #sidebar.collapsed ~ #map {
+            margin-left: 0;
+        }
+
+        /* 收納按鈕 - 確保 z-index 足夠高 */
+        #toggleBtn {
+            position: absolute;
+            right: -40px; /* 突出來的部分 */
+            top: 20px;
+            width: 40px;
+            height: 40px;
+            background: #2c3e50;
+            color: white;
+            border: none;
+            cursor: pointer;
+            border-radius: 0 8px 8px 0;
+            font-size: 20px;
+            z-index: 1002;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 2px 2px 10px rgba(0,0,0,0.2);
+        }
+        input[type="number"] {
+    border: 1px solid #eee;
+    background: #f9f9f9;
+    transition: border 0.3s;
+}
+
+input[type="number"]:focus {
+    outline: none;
+    border-color: #3498db;
+    background: #fff;
+}
+
+        #map { flex-grow: 1; transition: all 0.3s ease; height: 100vh; }
+        
+        .filter-group { margin-bottom: 20px; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+        label { display: block; margin-bottom: 8px; font-weight: bold; color: #333; }
+        input[type="number"] { width: 90%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; }
+        .stats { font-size: 0.9em; color: #666; margin-top: 5px; }
+    </style>
+</head>
+<body>
+
+<div id="sidebar">
+    <button id="toggleBtn" onclick="toggleSidebar()">☰</button>
+    
+    <div class="sidebar-inner">
+        <h2>Syracuse house searching</h2>
+        
+        <div class="filter-group">
+            <label>minimum area (sq.ft):</label>
+            <input type="number" id="minSize" placeholder="ex: 40" oninput="filterData()">
+        </div>
+
+        <div class="filter-group">
+            <label>highest budget (USD):</label>
+            <input type="number" id="maxPrice" placeholder="ex: 2000" oninput="filterData()">
+        </div>
+
+        <div class="filter-group">
+            <label><input type="checkbox" id="hasParking" onchange="filterData()"> Parking</label>
+            <label><input type="checkbox" id="isFurnished" onchange="filterData()"> Furnished</label>
+        </div>
+
+        <div id="status" class="stats">loading...</div>
+        <div class="filter-group" style="border-top: 1px solid #eee; padding-top: 15px;">
+    <label>price example：</label>
+    <div style="font-size: 13px; color: #666;">
+        <span style="color: #8e44ad;">●</span> $2000 up (super high)<br>
+        <span style="color: #e74c3c;">●</span> $1500 - $2000 (high)<br>
+        <span style="color: #3498db;">●</span> $1000 - $1500 (normal)<br>
+        <span style="color: #2ecc71;">●</span> under $1000  (cheap)
+    </div>
+</div>
+    </div>
+</div>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.4.1/dist/leaflet.markercluster.js"></script>
+
+<script>
+    let rentals = []; 
+
+    // 初始化地圖
+    const map = L.map('map').setView([43.0481, -76.1474], 14);
+    // 替換原本的 OpenStreetMap 網址
+L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+    attribution: '©OpenStreetMap, ©CartoDB'
+}).addTo(map);
+
+// 換成 Dark Matter 深色底圖
+/*L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution: '©OpenStreetMap, ©CartoDB'
+}).addTo(map);
+*/
+    let markers = L.markerClusterGroup();
+    map.addLayer(markers);
+
+    // 側邊欄縮放函式
+    function toggleSidebar() {
+        const sidebar = document.getElementById('sidebar');
+        const btn = document.getElementById('toggleBtn');
+        
+        sidebar.classList.toggle('collapsed');
+        
+        // 變更按鈕圖示
+        if (sidebar.classList.contains('collapsed')) {
+            btn.innerText = "▶";
+        } else {
+            btn.innerText = "☰";
+        }
+
+        // 重新校準地圖大小
+        setTimeout(() => {
+            map.invalidateSize();
+        }, 300);
+    }
+    // 1. 定義區域座標 (這是一組經緯度，你可以根據雪城地圖微調)
+const studentAreaCoords = [
+    [43.047321406132184, -76.1312585630583],
+    [43.04733708718595, -76.11872728321131],
+    [43.03556325951889, -76.11657882483931],
+    [43.045185506515786, -76.13062893792967]
+];
+
+// 2. 畫出範圍框
+const studentArea = L.polygon(studentAreaCoords, {
+    color: '#3b5998',      // 線條顏色 (FB 藍)
+    fillColor: '#3b5998',  // 填充顏色
+    fillOpacity: 0.2,      // 透明度 (0.2 比較不會擋住地圖)
+    weight: 2              // 線條粗細
+}).addTo(map);
+
+// 3. 加上文字標註
+studentArea.bindTooltip("normal price range", {
+    permanent: true,       // 永遠顯示文字，不用滑鼠移過去
+    direction: "center",
+    className: "area-label" // 可以自訂 CSS 樣式
+});
+
+
+const studentAreaCoords2 = [
+    [43.04937152162034, -76.14209199628048],
+    [43.047362232252674, -76.12718212372832],
+    [43.045507920607115, -76.13357650996008],
+    [43.036057305382506, -76.141394621781]
+];
+
+// 2. 畫出範圍框
+const studentArea2 = L.polygon(studentAreaCoords2, {
+    color: '#8B00FF',      // 線條顏色 (FB purple)
+    fillColor: '#8B00FF',  // 填充顏色
+    fillOpacity: 0.2,      // 透明度 (0.2 比較不會擋住地圖)
+    weight: 2              // 線條粗細
+}).addTo(map);
+
+// 3. 加上文字標註
+studentArea2.bindTooltip("highest price range", {
+    permanent: true,       // 永遠顯示文字，不用滑鼠移過去
+    direction: "center",
+    className: "area-label" // 可以自訂 CSS 樣式
+});
+
+const studentAreaCoords3 = [
+    [43.02812072084241, -76.13992477119321],
+    [43.028999128503806, -76.12893844365612],   
+    [43.02175188935672, -76.12825179818506],
+     [43.019367329253036, -76.13971019448351]
+];
+
+// 2. 畫出範圍框
+const studentArea3 = L.polygon(studentAreaCoords3, {
+    color: '#27ae60',      // 線條顏色 (FB green)
+    fillColor: '#27ae60',  // 填充顏色
+    fillOpacity: 0.2,      // 透明度 (0.2 比較不會擋住地圖)
+    weight: 2              // 線條粗細
+}).addTo(map);
+
+// 3. 加上文字標註
+studentArea3.bindTooltip("cheaper price range", {
+    permanent: true,       // 永遠顯示文字，不用滑鼠移過去
+    direction: "center",
+    className: "area-label" // 可以自訂 CSS 樣式
+});
+const studentAreaCoords4 = [
+    [43.0507728484225, -76.15960983840394],
+    [43.05027108082079, -76.14360241585968],   
+    [43.036847273875246, -76.14381699240634],
+     [43.03581213875972, -76.15750698648574]
+];
+
+// 2. 畫出範圍框
+const studentArea4 = L.polygon(studentAreaCoords4, {
+    color: '#e74c3c',      // 線條顏色 (FB red)
+    fillColor: '#e74c3c',  // 填充顏色
+    fillOpacity: 0.2,      // 透明度 (0.2 比較不會擋住地圖)
+    weight: 2              // 線條粗細
+}).addTo(map);
+
+// 3. 加上文字標註
+studentArea4.bindTooltip("higher price range", {
+    permanent: true,       // 永遠顯示文字，不用滑鼠移過去
+    direction: "center",
+    className: "area-label" // 可以自訂 CSS 樣式
+});
+    // 讀取資料
+    fetch('rentals.json')
+        .then(response => response.json())
+        .then(data => {
+            rentals = data; 
+            filterData(); 
+        })
+        .catch(error => {
+            console.error('JSON 讀取失敗:', error);
+            document.getElementById('status').innerText = "讀取失敗，請確認 rentals.json 路徑。";
+        });
+
+    function filterData() {
+    markers.clearLayers(); 
+
+    const minSize = document.getElementById('minSize').value || 0;
+    const maxPrice = document.getElementById('maxPrice').value || Infinity;
+    const hasParking = document.getElementById('hasParking').checked;
+    const isFurnished = document.getElementById('isFurnished').checked;
+
+    let count = 0;
+
+    rentals.forEach(home => {
+        const matchSize = (home.size === 0 || home.size === null) || (home.size >= minSize);
+        const matchPrice = home.price <= maxPrice;
+        const matchParking = !hasParking || home.parking === true || home.parking === "TRUE";
+        const matchFurnished = !isFurnished || home.furnished === true || home.furnished === "TRUE";
+
+        if (matchSize && matchPrice && matchParking && matchFurnished) {
+            
+            // 1. 先準備好彈出視窗內容 (popupHTML)
+            let popupHTML = `
+                <div style="width: 220px;">
+                    <strong style="font-size: 16px;">${home.name}</strong><br>
+                    <hr>
+                    <b>rent:</b> $${home.price}<br>
+                    <b>sq ft:</b> ${home.size > 0 ? home.size + ' m²' : 'N/A'}<br>
+            `;
+
+            if (home.images) {
+                popupHTML += `
+                    <div style="margin-top: 10px;">
+                        <a href="${home.images}" target="_blank">
+                            <img src="${home.images}" style="width: 100%; border-radius: 4px; cursor: zoom-in;">
+                        </a>
+                        <p style="font-size: 10px; color: gray; margin: 5px 0 0 0;">(click to open the picture)</p>
+                    </div>
+                `;
+            }
+            popupHTML += `</div>`;
+
+            // 2. 決定顏色
+            let markerColor = "#2ecc71"; // 綠色
+            if (home.price > 2000) {
+                markerColor = "#8e44ad";//purplr
+            } else if (home.price > 1500) {
+                markerColor = "#e74c3c"; // 紅色
+            } else if (home.price > 1000) {
+                markerColor = "#3498db"; // 藍色
+            }
+
+            // 3. 建立彩色圓點圖標
+            const customIcon = L.divIcon({
+                html: `<div style="
+                    background-color: ${markerColor};
+                    width: 12px;
+                    height: 12px;
+                    border: 2px solid white;
+                    border-radius: 50%;
+                    box-shadow: 0 0 5px rgba(0,0,0,0.3);
+                "></div>`,
+                className: '',
+                iconSize: [12, 12],
+                iconAnchor: [6, 6]
+            });
+
+            // 4. 建立標記並加入聚合層
+            const marker = L.marker([home.lat, home.lng], { icon: customIcon })
+                            .bindPopup(popupHTML);
+            
+            markers.addLayer(marker);
+            count++;
+        }
+    });
+
+    const statusEl = document.getElementById('status');
+    if (statusEl) statusEl.innerText = `found ${count} house`;
+}
+</script>
+
+</body>
+</html>
